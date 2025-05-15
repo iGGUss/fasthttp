@@ -189,8 +189,8 @@ func TestServerInvalidHeader(t *testing.T) {
 
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
-			if ctx.Request.Header.Peek("Foo") != nil || ctx.Request.Header.Peek("Foo ") != nil {
-				t.Error("expected Foo header")
+			if ctx.Request.Header.Peek("Foő") != nil || ctx.Request.Header.Peek("Foő ") != nil {
+				t.Error("expected Foő header")
 			}
 		},
 		Logger: &testLogger{},
@@ -208,7 +208,7 @@ func TestServerInvalidHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err = c.Write([]byte("POST /foo HTTP/1.1\r\nHost: gle.com\r\nFoo : bar\r\nContent-Length: 5\r\n\r\n12345")); err != nil {
+	if _, err = c.Write([]byte("POST /foo HTTP/1.1\r\nHost: gle.com\r\nFoő : bar\r\nContent-Length: 5\r\n\r\n12345")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,7 +225,7 @@ func TestServerInvalidHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err = c.Write([]byte("GET /foo HTTP/1.1\r\nHost: gle.com\r\nFoo : bar\r\n\r\n")); err != nil {
+	if _, err = c.Write([]byte("GET /foo HTTP/1.1\r\nHost: gle.com\r\nFoő : bar\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1819,8 +1819,8 @@ func TestRequestCtxUserValue(t *testing.T) {
 			t.Fatalf("unexpected value obtained from VisitUserValues for key: %q, expecting: %#v but got: %#v", key, v, value)
 		}
 	})
-	if len(ctx.userValues) != vlen {
-		t.Fatalf("the length of user values returned from VisitUserValues is not equal to the length of the userValues, expecting: %d but got: %d", len(ctx.userValues), vlen)
+	if len(ctx.Request.userValues) != vlen {
+		t.Fatalf("the length of user values returned from VisitUserValues is not equal to the length of the userValues, expecting: %d but got: %d", len(ctx.Request.userValues), vlen)
 	}
 
 	ctx.ResetUserValues()
@@ -1916,6 +1916,49 @@ func TestServerExpect100Continue(t *testing.T) {
 	}
 	if len(data) > 0 {
 		t.Fatalf("unexpected remaining data %q", data)
+	}
+}
+
+func TestServerExpect103EarlyHints(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		NoDefaultContentType:  true,
+		NoDefaultDate:         true,
+		NoDefaultServerHeader: true,
+		Handler: func(ctx *RequestCtx) {
+			ctx.Response.Header.Add("Link", "<https://cdn.com>; rel=preload; as=script")
+			ctx.EarlyHints() //nolint:errcheck
+		},
+	}
+
+	rw := &readWriter{}
+	rw.r.WriteString("GET /foo HTTP/1.1\r\nContent-Length: 5\r\nContent-Type: a/b\r\n\r\n12345")
+
+	if err := s.ServeConn(rw); err != nil {
+		t.Fatalf("Unexpected error from serveConn: %v", err)
+	}
+
+	scanner := bufio.NewScanner(&rw.w)
+	expected := []string{
+		"HTTP/1.1 103 Early Hints",
+		"Link: <https://cdn.com>; rel=preload; as=script",
+		"",
+		"HTTP/1.1 200 OK",
+		"Content-Length: 0",
+		"Link: <https://cdn.com>; rel=preload; as=script",
+	}
+
+	i := 0
+	for scanner.Scan() {
+		if i >= len(expected) {
+			break
+		}
+		line := scanner.Text()
+		if line != expected[i] {
+			t.Fatalf("unexpected data: %s. Expecting %s", line, expected[i])
+		}
+		i++
 	}
 }
 
@@ -3657,7 +3700,7 @@ func TestCloseOnShutdown(t *testing.T) {
 	done := 0
 	for {
 		select {
-		case <-time.After(time.Second):
+		case <-time.After(time.Second * 2):
 			t.Fatal("shutdown took too long")
 		case <-serveCh:
 			done++
@@ -3831,6 +3874,10 @@ func TestShutdownCloseIdleConns(t *testing.T) {
 	case err = <-shutdownErr:
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
+		}
+
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			t.Fatal("connection not closed")
 		}
 	}
 }
@@ -4410,6 +4457,16 @@ func TestRequestBodyStreamReadIssue1816(t *testing.T) {
 		}
 	}}
 	err := server.serveConn(serverCon)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRequestCtxInitShouldNotBeCanceledIssue1879(t *testing.T) {
+	var r Request
+	var requestCtx RequestCtx
+	requestCtx.Init(&r, nil, nil)
+	err := requestCtx.Err()
 	if err != nil {
 		t.Fatal(err)
 	}
